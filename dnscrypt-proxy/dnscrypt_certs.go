@@ -180,24 +180,43 @@ func packTxtString(s string) []byte {
 }
 
 func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, serverName *string) (*dns.Msg, time.Duration, error) {
-	response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr)
-	if err != nil && relayUDPAddr != nil {
+	response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
+	if err == nil {
+		dlog.Infof("Certificate retrieval for [%v] succeeded", *serverName)
+		return response, ttl, err
+	}
+	err = nil
+	response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
+	if err == nil {
+		dlog.Infof("Certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
+		return response, ttl, err
+	}
+	if relayUDPAddr != nil {
 		dlog.Debugf("Unable to get a certificate for [%v] via relay [%v], retrying over a direct connection", *serverName, relayUDPAddr.IP)
-		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, nil, nil)
+		err = nil
+		response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
 		if err == nil {
 			dlog.Infof("Direct certificate retrieval for [%v] succeeded", *serverName)
+			return response, ttl, err
+		}
+		err = nil
+		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
+		if err == nil {
+			dlog.Infof("Direct certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
+			return response, ttl, err
 		}
 	}
 	return response, ttl, err
 }
 
-func _dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr) (*dns.Msg, time.Duration, error) {
+func _dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, paddedLen int) (*dns.Msg, time.Duration, error) {
 	var packet []byte
 	var rtt time.Duration
 	if proto == "udp" {
+		paddedLen = 480
 		qNameLen, padding := len(query.Question[0].Name), 0
-		if qNameLen < 480 {
-			padding = 480 - qNameLen
+		if qNameLen < paddedLen {
+			padding = paddedLen - qNameLen
 		}
 		if padding > 0 {
 			opt := new(dns.OPT)
