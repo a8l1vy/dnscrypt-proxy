@@ -320,7 +320,10 @@ func fetchDNSCryptServerInfo(proxy *Proxy, name string, stamp stamps.ServerStamp
 	if err != nil {
 		return ServerInfo{}, err
 	}
-	certInfo, rtt, err := FetchCurrentDNSCryptCert(proxy, &name, proxy.mainProto, stamp.ServerPk, stamp.ServerAddrStr, stamp.ProviderName, isNew, relayUDPAddr, relayTCPAddr)
+	certInfo, rtt, fragmentsBlocked, err := FetchCurrentDNSCryptCert(proxy, &name, proxy.mainProto, stamp.ServerPk, stamp.ServerAddrStr, stamp.ProviderName, isNew, relayUDPAddr, relayTCPAddr, knownBugs)
+	if knownBugs.incorrectPadding == false && fragmentsBlocked {
+		dlog.Warnf("[%v] is badly configured and drops fragments for incoming queries, breaking DNSCrypt padding - A correctly configured server should only block fragments from upstream servers", name)
+	}
 	if err != nil {
 		return ServerInfo{}, err
 	}

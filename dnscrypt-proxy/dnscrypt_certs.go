@@ -21,9 +21,9 @@ type CertInfo struct {
 	ForwardSecurity    bool
 }
 
-func FetchCurrentDNSCryptCert(proxy *Proxy, serverName *string, proto string, pk ed25519.PublicKey, serverAddress string, providerName string, isNew bool, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr) (CertInfo, int, error) {
+func FetchCurrentDNSCryptCert(proxy *Proxy, serverName *string, proto string, pk ed25519.PublicKey, serverAddress string, providerName string, isNew bool, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, knownBugs ServerBugs) (CertInfo, int, bool, error) {
 	if len(pk) != ed25519.PublicKeySize {
-		return CertInfo{}, 0, errors.New("Invalid public key length")
+		return CertInfo{}, 0, false, errors.New("Invalid public key length")
 	}
 	if !strings.HasSuffix(providerName, ".") {
 		providerName = providerName + "."
@@ -37,10 +37,15 @@ func FetchCurrentDNSCryptCert(proxy *Proxy, serverName *string, proto string, pk
 		dlog.Warnf("[%v] uses a non-standard provider name ('%v' doesn't start with '2.dnscrypt-cert.')", *serverName, providerName)
 		relayUDPAddr, relayTCPAddr = nil, nil
 	}
-	in, rtt, err := dnsExchange(proxy, proto, &query, serverAddress, relayUDPAddr, relayTCPAddr, serverName)
+	tryFragmentsSupport := true
+	if knownBugs.incorrectPadding {
+		tryFragmentsSupport = false
+	}
+	in, rtt, fragmentsBlocked, err := dnsExchange(proxy, proto, &query, serverAddress, relayUDPAddr, relayTCPAddr, serverName, tryFragmentsSupport)
+	_ = fragmentsBlocked
 	if err != nil {
 		dlog.Noticef("[%s] TIMEOUT", *serverName)
-		return CertInfo{}, 0, err
+		return CertInfo{}, 0, fragmentsBlocked, err
 	}
 	now := uint32(time.Now().Unix())
 	certInfo := CertInfo{CryptoConstruction: UndefinedConstruction}
@@ -139,9 +144,9 @@ func FetchCurrentDNSCryptCert(proxy *Proxy, serverName *string, proto string, pk
 		certCountStr = " - additional certificate"
 	}
 	if certInfo.CryptoConstruction == UndefinedConstruction {
-		return certInfo, 0, errors.New("No useable certificate found")
+		return certInfo, 0, fragmentsBlocked, errors.New("No useable certificate found")
 	}
-	return certInfo, int(rtt.Nanoseconds() / 1000000), nil
+	return certInfo, int(rtt.Nanoseconds() / 1000000), fragmentsBlocked, nil
 }
 
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
@@ -179,40 +184,58 @@ func packTxtString(s string) []byte {
 	return msg
 }
 
-func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, serverName *string) (*dns.Msg, time.Duration, bool, error) {
+func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, serverName *string, tryFragmentsSupport bool) (*dns.Msg, time.Duration, bool, error) {
 	var err error
 	var response *dns.Msg
 	var ttl time.Duration
 
-	for retries := 1; retries >= 0; retries-- {
-		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
-		if err == nil {
-			dlog.Infof("Certificate retrieval for [%v] succeeded", *serverName)
-			return response, ttl, false, err
+	if tryFragmentsSupport {
+		for retries := 1; retries >= 0; retries-- {
+			response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
+			if err == nil {
+				dlog.Infof("Certificate retrieval for [%v] succeeded", *serverName)
+				return response, ttl, false, err
+			}
+			if retries > 0 {
+				dlog.Infof("Retrying certificate retrieval for [%v]", *serverName)
+			}
 		}
-		dlog.Infof("Retrying certificate retrieval for [%v]")
 	}
-	response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
-	if err == nil {
-		dlog.Infof("Certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
-		return response, ttl, true, err
+	for retries := 1; retries >= 0; retries-- {
+		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
+		if err == nil {
+			dlog.Infof("Certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
+			return response, ttl, true, err
+		}
+		if retries > 0 {
+			dlog.Infof("Retrying certificate retrieval without fragments for [%v]", *serverName)
+		}
 	}
 	if relayUDPAddr == nil {
 		return response, ttl, false, err
 	}
 	dlog.Debugf("Unable to get a certificate for [%v] via relay [%v], retrying over a direct connection", *serverName, relayUDPAddr.IP)
-	for retries := 1; retries >= 0; retries-- {
-		response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
-		if err == nil {
-			dlog.Infof("Direct certificate retrieval for [%v] succeeded", *serverName)
-			return response, ttl, false, err
+	if tryFragmentsSupport {
+		for retries := 1; retries >= 0; retries-- {
+			response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
+			if err == nil {
+				dlog.Infof("Direct certificate retrieval for [%v] succeeded", *serverName)
+				return response, ttl, false, err
+			}
+			if retries > 0 {
+				dlog.Infof("Retrying direct certificate retrieval for [%v]", *serverName)
+			}
 		}
-		dlog.Infof("Retrying direct certificate retrieval for [%v]")
 	}
-	response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
-	if err == nil {
-		dlog.Infof("Direct certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
-		return response, ttl, true, err
+	for retries := 1; retries >= 0; retries-- {
+		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
+		if err == nil {
+			dlog.Infof("Direct certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
+			return response, ttl, true, err
+		}
+		if retries > 0 {
+			dlog.Infof("Retrying direct certificate retrieval without fragments for [%v]", *serverName)
+		}
 	}
 	return response, ttl, false, err
 }
