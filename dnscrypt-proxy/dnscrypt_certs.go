@@ -179,41 +179,48 @@ func packTxtString(s string) []byte {
 	return msg
 }
 
-func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, serverName *string) (*dns.Msg, time.Duration, error) {
-	response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
-	if err == nil {
-		dlog.Infof("Certificate retrieval for [%v] succeeded", *serverName)
-		return response, ttl, err
+func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, serverName *string) (*dns.Msg, time.Duration, bool, error) {
+	var err error
+	var response *dns.Msg
+	var ttl time.Duration
+
+	for retries := 1; retries >= 0; retries-- {
+		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
+		if err == nil {
+			dlog.Infof("Certificate retrieval for [%v] succeeded", *serverName)
+			return response, ttl, false, err
+		}
+		dlog.Infof("Retrying certificate retrieval for [%v]")
 	}
-	err = nil
 	response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
 	if err == nil {
 		dlog.Infof("Certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
-		return response, ttl, err
+		return response, ttl, true, err
 	}
-	if relayUDPAddr != nil {
-		dlog.Debugf("Unable to get a certificate for [%v] via relay [%v], retrying over a direct connection", *serverName, relayUDPAddr.IP)
-		err = nil
+	if relayUDPAddr == nil {
+		return response, ttl, false, err
+	}
+	dlog.Debugf("Unable to get a certificate for [%v] via relay [%v], retrying over a direct connection", *serverName, relayUDPAddr.IP)
+	for retries := 1; retries >= 0; retries-- {
 		response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
 		if err == nil {
 			dlog.Infof("Direct certificate retrieval for [%v] succeeded", *serverName)
-			return response, ttl, err
+			return response, ttl, false, err
 		}
-		err = nil
-		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
-		if err == nil {
-			dlog.Infof("Direct certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
-			return response, ttl, err
-		}
+		dlog.Infof("Retrying direct certificate retrieval for [%v]")
 	}
-	return response, ttl, err
+	response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
+	if err == nil {
+		dlog.Infof("Direct certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
+		return response, ttl, true, err
+	}
+	return response, ttl, false, err
 }
 
 func _dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress string, relayUDPAddr *net.UDPAddr, relayTCPAddr *net.TCPAddr, paddedLen int) (*dns.Msg, time.Duration, error) {
 	var packet []byte
 	var rtt time.Duration
 	if proto == "udp" {
-		paddedLen = 480
 		qNameLen, padding := len(query.Question[0].Name), 0
 		if qNameLen < paddedLen {
 			padding = paddedLen - qNameLen
