@@ -189,52 +189,42 @@ func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress strin
 	var response *dns.Msg
 	var ttl time.Duration
 
-	if tryFragmentsSupport {
-		for retries := 1; retries >= 0; retries-- {
+	for retries := 1; retries >= 0; retries-- {
+		if tryFragmentsSupport {
 			response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
 			if err == nil {
 				dlog.Infof("Certificate retrieval for [%v] succeeded", *serverName)
 				return response, ttl, false, err
 			}
-			if retries > 0 {
-				dlog.Infof("Retrying certificate retrieval for [%v]", *serverName)
-			}
 		}
-	}
-	for retries := 1; retries >= 0; retries-- {
 		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
 		if err == nil {
 			dlog.Infof("Certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
 			return response, ttl, true, err
 		}
 		if retries > 0 {
-			dlog.Infof("Retrying certificate retrieval without fragments for [%v]", *serverName)
+			dlog.Infof("Retrying certificate retrieval for [%v]", *serverName)
 		}
 	}
 	if relayUDPAddr == nil {
 		return response, ttl, false, err
 	}
 	dlog.Debugf("Unable to get a certificate for [%v] via relay [%v], retrying over a direct connection", *serverName, relayUDPAddr.IP)
-	if tryFragmentsSupport {
-		for retries := 1; retries >= 0; retries-- {
+	for retries := 1; retries >= 0; retries-- {
+		if tryFragmentsSupport {
 			response, ttl, err := _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 1500)
 			if err == nil {
 				dlog.Infof("Direct certificate retrieval for [%v] succeeded", *serverName)
 				return response, ttl, false, err
 			}
-			if retries > 0 {
-				dlog.Infof("Retrying direct certificate retrieval for [%v]", *serverName)
-			}
 		}
-	}
-	for retries := 1; retries >= 0; retries-- {
 		response, ttl, err = _dnsExchange(proxy, proto, query, serverAddress, relayUDPAddr, relayTCPAddr, 480)
 		if err == nil {
 			dlog.Infof("Direct certificate retrieval for [%v] succeeded but server is blocking fragments", *serverName)
 			return response, ttl, true, err
 		}
 		if retries > 0 {
-			dlog.Infof("Retrying direct certificate retrieval without fragments for [%v]", *serverName)
+			dlog.Infof("Retrying direct certificate retrieval for [%v]", *serverName)
 		}
 	}
 	return response, ttl, false, err
